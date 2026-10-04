@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "exportedAt": "2026-10-03T12:00:00.000Z",
+  "transactions": [
+    { "id": "test-expense", "type": "expense", "amount": 125, "date": "2026-10-03", "accountId": "test-cash", "description": "Test groceries", "category": "Food" },
+    { "id": "test-income", "type": "income", "amount": 500, "date": "2026-10-03", "accountId": "test-cash", "source": "Test income", "notes": "" },
+    { "id": "test-saving", "type": "saving", "amount": 100, "date": "2026-10-03", "accountId": "test-cash", "savingType": "Emergency Fund", "mode": "transfer" }
+  ],
+  "accounts": [
+    { "id": "test-cash", "name": "Test cash", "institution": "Cash", "kind": "Cash", "openingBalance": 1000, "includeInTotal": true, "archived": false, "color": "#137d70", "icon": "wallet", "nickname": "" },
+    { "id": "test-wallet", "name": "Test Maya", "institution": "Maya", "kind": "E-Wallet", "openingBalance": 0, "includeInTotal": true, "archived": false, "color": "#137d70", "icon": "maya", "nickname": "" }
+  ],
+  "budgets": [{ "id": "test-budget", "category": "Food", "amount": 500, "month": "2026-10" }],
+  "goals": [{ "id": "test-goal", "name": "Test reserve", "currentAmount": 100, "targetAmount": 1000, "deadline": "2026-12-31", "color": "blue" }],
+  "dailyBudgets": [{ "date": "2026-10-03", "amount": 300 }],
+  "contributions": [{ "id": "test-contribution", "title": "Test support", "category": "Family Support", "amount": 50, "date": "2026-10-03", "status": "pending", "balanceEffect": "none", "includeInExpenseAnalytics": false, "createdAt": "2026-10-03T12:00:00.000Z", "updatedAt": "2026-10-03T12:00:00.000Z" }],
+  "plannedSpending": [{ "id": "test-plan", "title": "Test plan", "date": "2026-12-01", "expectedAmount": 200, "maximumAmount": 300, "category": "Bills", "accountId": "test-cash", "notes": "", "reserveMoney": true, "autoPost": false, "reminder": false, "status": "Upcoming", "actualAmount": null }],
+  "transfers": [{ "id": "test-transfer", "sourceAccountId": "test-cash", "destinationAccountId": "test-wallet", "amount": 200, "date": "2026-10-03", "note": "" }],
+  "balanceAdjustments": [{ "id": "test-adjustment", "accountId": "test-cash", "amount": 5, "date": "2026-10-03", "note": "Test correction" }]
+}

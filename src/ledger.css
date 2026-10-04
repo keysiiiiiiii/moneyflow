@@ -1,0 +1,3 @@
+.month-filter{display:flex;align-items:center;gap:7px;height:36px;padding:0 9px;border:1px solid var(--line);border-radius:6px;background:var(--panel-solid);color:var(--muted)}
+.month-filter input{width:118px;border:0;background:transparent;color:var(--ink);font-size:10px}
+@media(max-width:620px){.month-filter{flex:1}.month-filter input{width:100%;min-width:0}}
