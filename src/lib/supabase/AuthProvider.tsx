@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { checkSupabaseConnection, isSupabaseConfigured, supabase } from './client'
 import { AuthContext, type AuthContextValue } from './authContext'
+import { getAuthRedirectOptions } from './authRedirect'
 
 function configurationError() {
   return new Error('Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then restart the app.')
@@ -62,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signUp: async (email, password) => {
       if (!supabase) throw configurationError()
       setError('')
-      const { error: authError } = await supabase.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: window.location.origin } })
+      const { error: authError } = await supabase.auth.signUp({ email: email.trim(), password, options: getAuthRedirectOptions().signup })
       if (authError) { setError(authError.message); throw authError }
     },
     signOut: async () => {
@@ -73,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     resetPassword: async (email) => {
       if (!supabase) throw configurationError()
       setError('')
-      const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
+      const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), getAuthRedirectOptions().passwordReset)
       if (authError) { setError(authError.message); throw authError }
     },
     updatePassword: async (password) => {
