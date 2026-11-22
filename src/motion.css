@@ -176,10 +176,11 @@ body,
 .quick-add-menu.visible {
   animation: menu-arrive 190ms var(--motion-ease) both;
   right: 0;
-  left: 0;
+  left: auto;
   width: max-content;
   max-width: min(440px, calc(100vw - 24px));
-  margin-inline: auto;
+  margin-inline: 0;
+  transform-origin: bottom right;
   backdrop-filter: blur(18px);
 }
 

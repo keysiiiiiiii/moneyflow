@@ -1,6 +1,6 @@
 # MoneyFlow
 
-MoneyFlow is a local-first personal finance tracker built with React, TypeScript, Vite, Tailwind CSS, Zustand, Recharts, Lucide React, and Capacitor. It runs in a browser or as a packaged Android app. No login, backend, cloud storage, or cloud sync is implemented.
+MoneyFlow is a local-first personal finance tracker built with React, TypeScript, Vite, Tailwind CSS, Zustand, Recharts, Lucide React, and Capacitor. It runs in a browser as a PWA or as a packaged Android app. Authenticated accounts can sync the supported finance dataset through an owner-scoped atomic outbox; local-only mode remains available. User A/B hosted acceptance and isolated browser-driven first-login Import/Skip acceptance are complete. Production deployment and physical-device release checks remain open.
 
 ## Run locally
 
@@ -16,7 +16,7 @@ Vite prints the local development URL after the dev server starts.
 
 ## Build and install Android
 
-The native Android project is generated under `android/`. Capacitor packages `dist/` into the APK; the installed app does not need this laptop, an HTTPS host, a hotspot, or a development server to run. The browser version is not an offline PWA.
+The native Android project is generated under `android/`. Capacitor packages `dist/` into the APK; the installed app does not need this laptop, an HTTPS host, a hotspot, or a development server to run. The browser build includes a web manifest, a service worker, and automatic worker updates. Offline full-page reload and the current service-worker update check passed in local production preview. Vercel deployment, Android Chrome installation, and standalone launch remain unverified.
 
 On a Windows development machine:
 
@@ -37,7 +37,7 @@ This workspace currently has no detected Java or Android SDK installation. APK a
 3. In the phone app, open More > Backup & recovery > Import JSON. Review the collection counts and confirm replacement.
 4. Export a second backup from the phone and verify you can read it before deleting any desktop copy.
 
-Backup import rejects unsupported schema versions, invalid records, missing account references, and duplicate IDs. Legacy schema 1/2 and unversioned files can be validated and normalized; current schema 3 exports require all collections. An exact, bounded on-device pre-import recovery snapshot is written and verified before replacement. Failed storage writes stop restore. The recovery button asks for confirmation through the same validation workflow.
+Backup import rejects unsupported schema versions, invalid records, missing account references, and duplicate IDs. Legacy schema 1/2 and unversioned files, schema 3–6 backups, and schema 7 backups are validated and normalized; current schema 7 exports include goals, budgets, schedules/occurrences, reservations, notes, notifications, and activity history. An exact, bounded on-device pre-import recovery snapshot is written and verified before replacement. Failed storage writes stop restore. The recovery button asks for confirmation through the same validation workflow.
 
 Create backup now saves an on-device recovery snapshot; it is not a second-device backup. Export JSON creates a browser download or opens Android's native share sheet. Choose a trusted local file destination and verify that the receiving app saved the file: share-sheet completion cannot guarantee that. Original storage can also be extracted for manual repair if a legacy record fails validation; this rescue file is not a standard import backup.
 
@@ -48,18 +48,41 @@ Backups are unencrypted JSON containing personal finance records. Keep a separat
 - Dashboard with balance, monthly expenses, savings, budget remaining, category spending, six-month cash-flow trends, recent activity, budget progress, savings rate, and a financial health indicator.
 - Income, expense, and savings entries with editing, deletion, and transaction search and filters.
 - Contributions with date-driven pending, scheduled, historical, and paid states; paid records use a linked, idempotent expense ledger entry that can be safely edited or reversed on delete.
-- Savings breakdowns and goals with progress, deadlines, remaining amounts, and contributions.
+- Savings breakdowns and goals with progress, deadlines, remaining amounts, and account-linked contributions that can reserve funds or pay money out.
+- Account and global available balances that distinguish physical money from savings, goal, and planned-spending allocations.
+- Searchable permanent activity history and calendar notes that do not affect finance totals.
 - Monthly category budgets with safe, warning, and exceeded states.
 - Spending calendar with selected-day expense, income, savings, activity, daily limits, and no-spend highlighting.
 - Analytics for category ranking, average daily and monthly spending, monthly comparisons, savings growth, and highest-spend day.
-- Local budget and goal alerts, light/dark theme, JSON backup export/import, and confirmed data clearing.
+- Local budget and goal alerts, installable PWA support, light/dark theme, JSON backup export/import, and confirmed data clearing.
 - Responsive navigation, accessible keyboard-operable controls, and reduced-motion support.
 
 ## Data and privacy
 
-Zustand persists finance records in LocalStorage under the unchanged `moneyflow-data-v1` key with persistence version 3; theme and accent preferences are separate. No finance-store migration was introduced by the Android conversion. Fresh app installs start empty. Analytics are derived from the preserved ledger rather than exported as separate stale totals. A local validation warning never replaces existing records; use original-storage extraction for recovery. The local profile is optional display information, not an authenticated user account.
+Zustand persists anonymous finance records in LocalStorage under the unchanged `moneyflow-data-v1` key with persistence version 7; authenticated caches use a per-user LocalStorage key. Theme and accent sync through the authenticated profile. Migrations preserve existing records and create a pre-migration backup when upgrading old persisted versions. Analytics are derived from the preserved ledger rather than exported as separate stale totals. A local validation warning never replaces existing records; use original-storage extraction for recovery. Supabase auth requires `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`; only a publishable key belongs in frontend configuration.
 
-All tracking calculations and mutations operate offline. In-app scheduled plans are processed on app load/resume using the existing rules; there is no background scheduler, push service, bank API, or external analytics service. The offline indicator reports device/browser connectivity, not access to any finance backend.
+Authenticated atomic sync covers accounts, transactions, transfers, budgets, goals/contributions, schedules/occurrences, planned spending, reservations, notes, notifications, activity history, and profile preferences. A per-user durable outbox retries after reload/reconnect and retains records on conflicts. Choosing Skip Import preserves legacy records in the authenticated user's local cache and keeps that user's data local-only until explicitly imported. Browser-driven Import/Skip acceptance used isolated synthetic Auth/API fixtures; it did not write to the accepted User A/B datasets. These local checks do not replace production verification. In-app scheduled plans are processed on app load/resume; there is no background scheduler, push service, bank API, or external analytics service. The sync indicator reports outbox status, not proof by itself that hosted records match.
+
+## Production deployment
+
+Reconnect this GitHub repository to the existing MoneyFlow Vercel project; do not create a duplicate project or Supabase project. This workspace has no local `.vercel/project.json` link. The Git remote is `origin` (`https://github.com/keysiiiiiiii/moneyflow.git`), and production should deploy from `main` after the reviewed changes are committed and pushed.
+
+Use these Vercel project settings:
+
+- Framework Preset: `Vite`
+- Root Directory: `.`
+- Install Command: `npm ci`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+- Node.js: `22.x` (project minimum is Node 22.12; newer supported LTS is fine)
+
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` for Production. Add the same two values to Preview only if you intend to test authenticated previews; use a disposable QA account because previews will connect to the configured Supabase project. Without Preview values, previews remain unauthenticated/local-only. Never add a Supabase secret or service-role key to Vercel frontend variables.
+
+`vercel.json` supplies the Vite SPA fallback to `/index.html`, disables caching for `/` and `/index.html`, and revalidates `/sw.js` and `/manifest.webmanifest`. Vite's hashed assets retain Vercel's normal immutable caching. In Supabase Auth > URL Configuration, set Site URL to the exact production origin (`https://<production-domain>/`). Allow the exact app redirect (`https://<production-domain>`) and `https://<production-domain>/**`. If authenticated Vercel previews are enabled, add the narrower team-scoped pattern `https://*-<vercel-team-or-account-slug>.vercel.app/**`; replace the placeholder with the actual Vercel scope slug. The production domain and Vercel scope are not present in this workspace, so obtain both from the existing Vercel project before saving these URLs.
+
+After deploying, verify production login, authenticated sync, cache headers, worker update, and offline reload. Do not mark the release ready before production HTTPS/Auth/cloud-sync and Android Chrome/physical-device acceptance pass.
+
+The PWA service worker precaches the app shell and removes older MoneyFlow caches during activation. Offline full-page reload and a service-worker update check passed in the current local production preview; Vercel production behavior and Android standalone launch remain unverified. In-app scheduled plans are processed on app load/resume; there is no background scheduler, push service, bank API, or external analytics service.
 
 Official Maya and BDO site icons are bundled locally from `https://www.maya.ph/favicon.ico` and `https://www.bdo.com.ph/favicon.ico`. Other institutions retain existing Lucide fallbacks and institution labels until verified official assets can be obtained. No runtime institution-logo requests are made.
 

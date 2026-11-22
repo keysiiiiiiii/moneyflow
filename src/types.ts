@@ -21,6 +21,8 @@ export interface Expense extends TransactionBase {
   description: string
   relatedBudgetId?: string
   contributionId?: string
+  goalContributionId?: string
+  budgetOccurrenceId?: string
   recurring?: boolean
   autoPlanId?: string
   provisional?: boolean
@@ -41,6 +43,50 @@ export interface Budget {
   month: string
 }
 
+export type BudgetOccurrenceStatus = 'scheduled' | 'due' | 'pending_reconciliation' | 'completed' | 'exceeded' | 'skipped' | 'cancelled'
+
+export interface BudgetSchedule {
+  id: string
+  userId: string
+  title: string
+  category: string
+  amount: number
+  sourceAccountId: string
+  startDate: string
+  endDate: string
+  weekdays: number[]
+  reservationMode: 'none' | 'reserve'
+  autoPost: boolean
+  status: 'active' | 'cancelled'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FinanceNotification {
+  id: string
+  userId: string
+  type: string
+  title: string
+  message: string
+  relatedEntityType?: string
+  relatedEntityId?: string
+  createdAt: string
+  readAt?: string
+  priority: 'low' | 'normal' | 'high'
+}
+
+export interface BudgetOccurrence {
+  id: string
+  budgetScheduleId: string
+  date: string
+  plannedAmount: number
+  actualAmount: number | null
+  status: BudgetOccurrenceStatus
+  reservationId?: string
+  postedTransactionId?: string
+  reconciledAt?: string
+}
+
 export interface Goal {
   id: string
   name: string
@@ -48,6 +94,49 @@ export interface Goal {
   currentAmount: number
   deadline: string
   color: string
+}
+
+export interface GoalContribution {
+  id: string
+  goalId: string
+  amount: number
+  accountId: string
+  type: 'reserve' | 'paid'
+  date: string
+  notes: string
+  transactionId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type HistoryCategory = 'expenses' | 'income' | 'transfers' | 'accounts' | 'savings' | 'goals' | 'budgets' | 'contributions' | 'system'
+
+export interface ActivityHistoryEntry {
+  id: string
+  userId: string
+  category: HistoryCategory
+  action: string
+  entityType: string
+  entityId: string
+  title: string
+  description: string
+  date: string
+  createdAt: string
+  amount?: number
+  accountId?: string
+  categoryName?: string
+  beforeBalance?: number
+  afterBalance?: number
+}
+
+export interface CalendarNote {
+  id: string
+  userId: string
+  date: string
+  title: string
+  content: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface DailyBudget {
@@ -80,6 +169,8 @@ export interface Profile {
   payday: string
   weekStartsOn: 0 | 1
   dateFormat: 'en-PH' | 'en-US' | 'en-GB'
+  theme?: 'light' | 'dark' | 'system'
+  accent?: 'ocean' | 'midnight' | 'lagoon'
 }
 
 export type ContributionStatus = 'pending' | 'scheduled' | 'paid' | 'cancelled'
@@ -109,7 +200,7 @@ export interface Contribution {
   includeInAnalytics?: boolean
 }
 
-export type PlannedSpendingStatus = 'Upcoming' | 'Active' | 'Pending Reconciliation' | 'Completed' | 'Exceeded' | 'Cancelled'
+export type PlannedSpendingStatus = 'Upcoming' | 'Active' | 'Due' | 'Pending Reconciliation' | 'Completed' | 'Exceeded' | 'Skipped' | 'Cancelled'
 
 export interface PlannedSpending {
   id: string
@@ -158,6 +249,12 @@ export interface FinanceState {
   transactions: Transaction[]
   budgets: Budget[]
   goals: Goal[]
+  goalContributions: GoalContribution[]
+  budgetSchedules: BudgetSchedule[]
+  budgetOccurrences: BudgetOccurrence[]
+  calendarNotes: CalendarNote[]
+  notifications: FinanceNotification[]
+  activityHistory: ActivityHistoryEntry[]
   dailyBudgets: DailyBudget[]
   accounts: Account[]
   profile: Profile
@@ -170,9 +267,21 @@ export interface FinanceState {
   deleteTransaction: (id: string) => void
   upsertBudget: (budget: Budget) => void
   deleteBudget: (id: string) => void
+  upsertBudgetSchedule: (schedule: BudgetSchedule) => { success: boolean; message: string }
+  skipBudgetOccurrence: (id: string) => void
+  processDueBudgetOccurrences: (today: string) => void
+  reconcileBudgetOccurrence: (id: string, actualAmount: number) => void
+  deleteBudgetSchedule: (id: string) => void
   upsertGoal: (goal: Goal) => void
   deleteGoal: (id: string) => void
-  addGoalContribution: (id: string, amount: number, accountId?: string, paidFromAccount?: boolean) => void
+  upsertGoalContribution: (contribution: GoalContribution) => { success: boolean; message: string }
+  deleteGoalContribution: (id: string) => void
+  upsertCalendarNote: (note: CalendarNote) => void
+  deleteCalendarNote: (id: string) => void
+  markNotificationRead: (id: string) => void
+  markAllNotificationsRead: () => void
+  deleteNotification: (id: string) => void
+  upsertNotification: (notification: FinanceNotification) => void
   upsertDailyBudget: (dailyBudget: DailyBudget) => void
   clearAllData: () => void
   setProfile: (profile: Profile) => void
@@ -187,6 +296,7 @@ export interface FinanceState {
   payContribution: (id: string, accountId: string) => { success: boolean; message: string }
   deleteContribution: (id: string) => void
   upsertPlannedSpending: (plan: PlannedSpending) => void
+  skipPlannedSpending: (id: string) => void
   reconcilePlannedSpending: (id: string, actualAmount: number) => void
   processDueSpendingPlans: (today: string) => void
   deletePlannedSpending: (id: string) => void

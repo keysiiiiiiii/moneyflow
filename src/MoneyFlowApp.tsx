@@ -9,13 +9,19 @@ import { RecordDialog, type ManagementKind } from './components/RecordDialog'
 import { AccountIcon } from './components/AccountIcon'
 import { BackupScreen } from './components/BackupScreen'
 import { QuickActions } from './components/QuickActions'
+import { ActivityHistoryPage } from './components/ActivityHistoryPage'
+import { CalendarNoteDialog } from './components/CalendarNoteDialog'
+import { BudgetScheduleDialog } from './components/BudgetScheduleDialog'
+import { BudgetOccurrenceDialog } from './components/BudgetOccurrenceDialog'
+import { PwaInstallButton } from './components/PwaInstallButton'
+import { useCloudSync } from './lib/supabase/cloudSyncContext'
 import { AccountAllocation } from './components/AccountAllocation'
 import { Capacitor } from '@capacitor/core'
 import { App as NativeApp } from '@capacitor/app'
 import { createBackup } from './lib/backup'
 import { accountBalance, availableToSpend, buildMonthlyTrend, calculateAnalytics, formatCurrency, formatDate, localDate, monthKey, totalMoney, totalSavings as sumSavings } from './lib/finance'
 import { useFinanceStore } from './store'
-import type { Account, Budget, Contribution, Goal, PlannedSpending, Transaction } from './types'
+import type { Account, Budget, BudgetOccurrence, BudgetSchedule, CalendarNote, Contribution, FinanceNotification, Goal, GoalContribution, PlannedSpending, Transaction } from './types'
 import './App.css'
 import './ledger.css'
 import './fintech.css'
@@ -24,14 +30,14 @@ import './account-icons.css'
 import './motion.css'
 import './mobile.css'
 
-type Page = 'dashboard' | 'transactions' | 'savings' | 'goals' | 'budgets' | 'calendar' | 'analytics' | 'notifications' | 'settings' | 'accounts' | 'contributions' | 'backups'
-type DialogState = { kind: DialogKind | ManagementKind; record?: Transaction | Budget | Goal | Account | Contribution | PlannedSpending; goalId?: string; initialDate?: string } | null
+type Page = 'dashboard' | 'transactions' | 'history' | 'savings' | 'goals' | 'budgets' | 'calendar' | 'analytics' | 'notifications' | 'settings' | 'accounts' | 'contributions' | 'backups'
+type DialogState = { kind: DialogKind | ManagementKind; record?: Transaction | Budget | Goal | GoalContribution | Account | Contribution | PlannedSpending; goalId?: string; initialDate?: string } | null
 const categories = ['Food', 'Transportation', 'Bills', 'Shopping', 'Entertainment', 'Health', 'Education', 'Investment', 'Others']
 const colors = ['#2878f0', '#16a982', '#f28c67', '#9077ee', '#e9ad42', '#49a3b8', '#df6d8a', '#8592a8']
 const navGroups = [
   { label: 'OVERVIEW', items: [['dashboard', 'Dashboard', LayoutDashboard], ['transactions', 'Expenses', ArrowDownLeft]] },
   { label: 'PLAN', items: [['savings', 'Savings', Wallet], ['goals', 'Goals', Target], ['budgets', 'Budget', Activity], ['calendar', 'Calendar', CalendarDays], ['contributions', 'Contributions', HandHeart], ['accounts', 'Accounts', Building2]] },
-  { label: 'INSIGHTS', items: [['analytics', 'Analytics', TrendingUp], ['notifications', 'Notifications', Bell]] },
+  { label: 'INSIGHTS', items: [['analytics', 'Analytics', TrendingUp], ['history', 'History', Activity], ['notifications', 'Notifications', Bell]] },
 ] as const
 
 /** Shows a compact dashboard or analytics metric. */
@@ -59,9 +65,16 @@ function EmptyState({ title, detail, onAdd }: { title: string; detail: string; o
 
 /** Runs the single-user finance workspace with local-first persistence. */
 export default function MoneyFlowApp() {
+    const { runMutation: runCloudMutation, enabled: cloudSyncEnabled, status: cloudSyncStatus, pendingCount: cloudPendingCount } = useCloudSync()
   const transactions = useFinanceStore((state) => state.transactions)
   const budgets = useFinanceStore((state) => state.budgets)
   const goals = useFinanceStore((state) => state.goals)
+  const goalContributions = useFinanceStore((state) => state.goalContributions)
+  const budgetSchedules = useFinanceStore((state) => state.budgetSchedules)
+  const budgetOccurrences = useFinanceStore((state) => state.budgetOccurrences)
+  const activityHistory = useFinanceStore((state) => state.activityHistory)
+  const calendarNotes = useFinanceStore((state) => state.calendarNotes)
+  const notifications = useFinanceStore((state) => state.notifications)
   const dailyBudgets = useFinanceStore((state) => state.dailyBudgets)
   const accounts = useFinanceStore((state) => state.accounts)
   const profile = useFinanceStore((state) => state.profile)
@@ -73,8 +86,10 @@ export default function MoneyFlowApp() {
   const [page, setPage] = useState<Page>('dashboard')
   const [dialog, setDialog] = useState<DialogState>(null)
   const [toast, setToast] = useState('')
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => (localStorage.getItem('moneyflow-theme') as 'light' | 'dark' | 'system') || 'system')
-  const [accent, setAccent] = useState<'ocean' | 'midnight' | 'lagoon'>(() => (localStorage.getItem('moneyflow-accent') as 'ocean' | 'midnight' | 'lagoon') || 'ocean')
+  const theme = profile.theme ?? 'system'
+  const accent = profile.accent ?? 'ocean'
+  const setTheme = (value: 'light' | 'dark' | 'system') => useFinanceStore.getState().setProfile({ ...useFinanceStore.getState().profile, theme: value })
+  const setAccent = (value: 'ocean' | 'midnight' | 'lagoon') => useFinanceStore.getState().setProfile({ ...useFinanceStore.getState().profile, accent: value })
   const [query, setQuery] = useState('')
   const [filterType, setFilterType] = useState('all')
   const [filterCategory, setFilterCategory] = useState('all')
@@ -85,6 +100,12 @@ export default function MoneyFlowApp() {
   const [contributionMonth, setContributionMonth] = useState('all')
   const [calendarMonth, setCalendarMonth] = useState(() => new Date())
   const [selectedDate, setSelectedDate] = useState(localDate())
+  const [noteDialogOpen, setNoteDialogOpen] = useState(false)
+  const [editingCalendarNote, setEditingCalendarNote] = useState<CalendarNote | null>(null)
+  const [notificationFilter, setNotificationFilter] = useState<'all' | 'unread' | 'read'>('all')
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
+  const [editingBudgetSchedule, setEditingBudgetSchedule] = useState<BudgetSchedule | null>(null)
+  const [budgetReconciliation, setBudgetReconciliation] = useState<BudgetOccurrence | null>(null)
   const [today, setToday] = useState(localDate())
   const [quickOpen, setQuickOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
@@ -95,11 +116,23 @@ export default function MoneyFlowApp() {
     })
   const removeTransaction = useFinanceStore((state) => state.deleteTransaction)
   const removeBudget = useFinanceStore((state) => state.deleteBudget)
+  const saveBudgetSchedule = useFinanceStore((state) => state.upsertBudgetSchedule)
+  const removeBudgetSchedule = useFinanceStore((state) => state.deleteBudgetSchedule)
+  const skipBudgetOccurrence = useFinanceStore((state) => state.skipBudgetOccurrence)
+  const reconcileBudgetOccurrence = useFinanceStore((state) => state.reconcileBudgetOccurrence)
   const removeGoal = useFinanceStore((state) => state.deleteGoal)
+  const removeGoalContribution = useFinanceStore((state) => state.deleteGoalContribution)
+  const saveCalendarNote = useFinanceStore((state) => state.upsertCalendarNote)
+  const removeCalendarNote = useFinanceStore((state) => state.deleteCalendarNote)
+  const markNotificationRead = useFinanceStore((state) => state.markNotificationRead)
+  const markAllNotificationsRead = useFinanceStore((state) => state.markAllNotificationsRead)
+  const removeNotification = useFinanceStore((state) => state.deleteNotification)
   const removeAccount = useFinanceStore((state) => state.deleteAccount)
   const archiveAccount = useFinanceStore((state) => state.archiveAccount)
   const removePlan = useFinanceStore((state) => state.deletePlannedSpending)
+  const skipPlannedSpending = useFinanceStore((state) => state.skipPlannedSpending)
   const processDuePlans = useFinanceStore((state) => state.processDueSpendingPlans)
+  const processDueBudgetOccurrences = useFinanceStore((state) => state.processDueBudgetOccurrences)
   const currentMonth = monthKey(today)
   const monthEntries = transactions.filter((entry) => monthKey(entry.date) === currentMonth)
   const income = monthEntries.filter((entry) => entry.type === 'income').reduce((sum, entry) => sum + entry.amount, 0)
@@ -107,7 +140,7 @@ export default function MoneyFlowApp() {
   const savingsTotal = sumSavings(transactions)
   const totalSavings = savingsTotal
   const totalMoneyAmount = totalMoney(accounts, transactions, transfers, contributions, balanceAdjustments)
-  const spendable = availableToSpend(totalMoneyAmount, transactions, plannedSpending, today)
+  const spendable = availableToSpend(totalMoneyAmount, transactions, plannedSpending, today, goalContributions, budgetSchedules, budgetOccurrences)
   const accountRows = useMemo(() => accounts.map((account) => ({ ...account, balance: accountBalance(account, transactions, transfers, contributions, balanceAdjustments) })), [accounts, transactions, transfers, contributions, balanceAdjustments])
   const greetingName = profile.preferredName.trim() || profile.displayName.trim()
   const initials = (profile.preferredName.trim() || profile.displayName.trim()).split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || 'MF'
@@ -127,12 +160,13 @@ export default function MoneyFlowApp() {
     for (const goal of goals) if (goal.currentAmount >= goal.targetAmount * 0.8 && goal.currentAmount < goal.targetAmount) list.push({ title: `${goal.name} is within reach`, detail: `${Math.round(goal.currentAmount / goal.targetAmount * 100)}% funded.`, tone: 'green' })
     for (const plan of plannedSpending) if (plan.status === 'Pending Reconciliation') list.push({ title: `${plan.title} needs reconciliation`, detail: `Confirm the actual amount for the planned ${formatCurrency(plan.maximumAmount)}.`, tone: 'yellow' })
     for (const contribution of contributions) if (contribution.status === 'scheduled' && (contribution.contributionDate ?? contribution.date) <= today) list.push({ title: `Your ${contribution.title} contribution of ${formatCurrency(contribution.amount)} is due today`, detail: 'Choose a source account and mark it paid when ready.', tone: 'blue', contributionId: contribution.id })
-    for (const plan of plannedSpending) if (plan.reminder && plan.date === today && ['Upcoming', 'Active'].includes(plan.status)) list.push({ title: `${plan.title} is scheduled today`, detail: `Planned amount ${formatCurrency(plan.expectedAmount || plan.maximumAmount)}.`, tone: 'blue' })
+    for (const plan of plannedSpending) if (plan.date <= today && ['Upcoming', 'Active', 'Due'].includes(plan.status)) list.push({ title: `${plan.title} budget is due ${plan.date === today ? 'today' : 'now'}`, detail: `${formatCurrency(plan.expectedAmount || plan.maximumAmount)} planned for ${plan.category}${plan.reserveMoney ? ' · funds are reserved' : ''}.`, tone: 'blue' })
     if (!transactions.some((entry) => entry.type === 'expense' && !entry.contributionId && entry.date === today) && !contributions.some((entry) => entry.status === 'paid' && entry.balanceEffect === 'deducted' && (entry.paidAt?.slice(0, 10) ?? entry.contributionDate ?? entry.date) === today)) list.push({ title: 'No expense recorded today', detail: 'A no-spend day is a good day for your budget.', tone: 'blue' })
     if (goals.some((goal) => goal.currentAmount >= goal.targetAmount)) list.push({ title: 'Goal completed', detail: 'Congratulations on reaching a financial goal.', tone: 'green' })
     return list
   })()
-  const pageNames: Record<Page, string> = { dashboard: 'Dashboard', transactions: 'Expenses', savings: 'Savings', goals: 'Goals', budgets: 'Budget', calendar: 'Calendar', analytics: 'Analytics', notifications: 'Notifications', settings: 'Settings', accounts: 'Accounts', contributions: 'Contributions', backups: 'Backup & recovery' }
+  const unreadNotificationCount = notifications.filter((item) => !item.readAt).length
+  const pageNames: Record<Page, string> = { dashboard: 'Dashboard', transactions: 'Expenses', history: 'History', savings: 'Savings', goals: 'Goals', budgets: 'Budget', calendar: 'Calendar', analytics: 'Analytics', notifications: 'Notifications', settings: 'Settings', accounts: 'Accounts', contributions: 'Contributions', backups: 'Backup & recovery' }
 
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }) }, [page])
 
@@ -159,12 +193,13 @@ export default function MoneyFlowApp() {
 
   useEffect(() => {
     processDuePlans(today)
+    processDueBudgetOccurrences(today)
     const now = new Date()
     const nextMidnight = new Date(now)
     nextMidnight.setHours(24, 0, 0, 25)
-    const timer = window.setTimeout(() => { const newToday = localDate(); processDuePlans(newToday); setToday(newToday) }, nextMidnight.getTime() - now.getTime())
+    const timer = window.setTimeout(() => { const newToday = localDate(); processDuePlans(newToday); processDueBudgetOccurrences(newToday); setToday(newToday) }, nextMidnight.getTime() - now.getTime())
     return () => window.clearTimeout(timer)
-  }, [processDuePlans, today, plannedSpending])
+  }, [processDuePlans, processDueBudgetOccurrences, today, plannedSpending, budgetOccurrences])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -187,7 +222,7 @@ export default function MoneyFlowApp() {
   }, [toast])
 
   /** Opens a typed add/edit modal. */
-  function open(kind: DialogKind, record?: Transaction | Budget | Goal, goalId?: string, initialDate?: string) {
+  function open(kind: DialogKind, record?: Transaction | Budget | Goal | GoalContribution, goalId?: string, initialDate?: string) {
     setQuickOpen(false)
     setDialog({ kind, record, goalId, initialDate })
   }
@@ -199,9 +234,15 @@ export default function MoneyFlowApp() {
   }
 
   /** Deletes a transaction after explicit confirmation. */
-  function deleteEntry(entry: Transaction) {
+  async function deleteEntry(entry: Transaction) {
     const name = entry.type === 'income' ? entry.source : entry.type === 'expense' ? entry.description : entry.savingType
-    if (window.confirm(`Delete “${name}”?`)) { removeTransaction(entry.id); setToast('Transaction deleted') }
+    if (entry.type === 'expense' && (entry.contributionId || entry.goalContributionId || entry.autoPlanId || entry.budgetOccurrenceId)) { setToast('Use the related contribution or budget to reverse this linked expense'); return }
+    if (!window.confirm(`Delete “${name}”?`)) return
+    try {
+      const queued = await runCloudMutation({ kind: 'delete_transaction', value: { id: entry.id } })
+      removeTransaction(entry.id)
+      setToast(queued ? 'Transaction removed locally; cloud sync pending' : 'Transaction deleted')
+    } catch (failure) { setToast(failure instanceof Error ? failure.message : 'Transaction could not be deleted') }
   }
 
 
@@ -251,18 +292,32 @@ export default function MoneyFlowApp() {
 
   /** Renders progress, deadline, and contribution controls for each goal. */
   function goalsPage(): ReactElement {
-    return <section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">MAKE IT HAPPEN</span><h2>Goals with momentum</h2></div><button className="button primary" onClick={() => open('goal')}><Plus size={16} />Create goal</button></div><div className="goal-grid">{goals.map((goal) => { const percent = Math.min(100, goal.currentAmount / goal.targetAmount * 100); const days = Math.max(0, Math.ceil((new Date(`${goal.deadline}T12:00:00`).getTime() - new Date(`${today}T12:00:00`).getTime()) / 86_400_000)); return <article className={`goal-card ${goal.color}`} key={goal.id}><div className="goal-card-top"><Target size={18} /><div className="row-actions"><button className="icon-button small" aria-label={`Edit ${goal.name}`} onClick={() => open('goal', goal)}><MoreHorizontal size={16} /></button><button className="icon-button small danger-hover" aria-label={`Delete ${goal.name}`} onClick={() => { if (window.confirm(`Delete ${goal.name}?`)) { removeGoal(goal.id); setToast('Goal deleted') } }}><Trash2 size={15} /></button></div></div><h3>{goal.name}</h3><p>{formatCurrency(goal.currentAmount)} <span>of {formatCurrency(goal.targetAmount)}</span></p><div className="progress-track"><i style={{ width: `${percent}%` }} /></div><div className="goal-stats"><strong>{Math.round(percent)}% complete</strong><span>{days} days left</span></div><div className="goal-footer"><span>{formatCurrency(Math.max(0, goal.targetAmount - goal.currentAmount))} to go</span><button className="text-button" onClick={() => open('contribution', undefined, goal.id)}>Add funds <ArrowRight size={14} /></button></div></article> })}{!goals.length ? <EmptyState title="Give your savings a destination" detail="Create a goal and watch each contribution move you closer." onAdd={() => open('goal')} /> : null}</div></section>
+    return <section className="panel page-panel">
+      <div className="panel-heading"><div><span className="eyebrow">MAKE IT HAPPEN</span><h2>Goals with momentum</h2></div><button className="button primary" onClick={() => open('goal')}><Plus size={16} />Create goal</button></div>
+      <div className="goal-grid">{goals.map((goal) => {
+        const percent = Math.min(100, goal.currentAmount / goal.targetAmount * 100)
+        const days = Math.max(0, Math.ceil((new Date(`${goal.deadline}T12:00:00`).getTime() - new Date(`${today}T12:00:00`).getTime()) / 86_400_000))
+        const entries = goalContributions.filter((entry) => entry.goalId === goal.id).sort((a, b) => b.date.localeCompare(a.date))
+        return <article className={`goal-card ${goal.color}`} key={goal.id}>
+          <div className="goal-card-top"><Target size={18} /><div className="row-actions"><button className="icon-button small" aria-label={`Edit ${goal.name}`} onClick={() => open('goal', goal)}><MoreHorizontal size={16} /></button><button className="icon-button small danger-hover" aria-label={`Delete ${goal.name}`} onClick={() => { if (entries.length) { setToast('Delete this goal’s contribution records first'); return } if (window.confirm(`Delete ${goal.name}?`)) { removeGoal(goal.id); setToast('Goal deleted') } }}><Trash2 size={15} /></button></div></div>
+          <h3>{goal.name}</h3><p>{formatCurrency(goal.currentAmount)} <span>of {formatCurrency(goal.targetAmount)}</span></p><div className="progress-track"><i style={{ width: `${percent}%` }} /></div><div className="goal-stats"><strong>{Math.round(percent)}% complete</strong><span>{days} days left</span></div><div className="goal-footer"><span>{formatCurrency(Math.max(0, goal.targetAmount - goal.currentAmount))} to go</span><button className="text-button" onClick={() => open('contribution', undefined, goal.id)}>Add funds <ArrowRight size={14} /></button></div>
+          {entries.length ? <div className="goal-contribution-list">{entries.map((entry) => <div className="goal-contribution-row" key={entry.id}><div><strong>{formatCurrency(entry.amount)}</strong><small>{formatDate(entry.date)} · {entry.type === 'reserve' ? 'Reserved' : 'Paid'} · {accounts.find((account) => account.id === entry.accountId)?.name ?? 'Account'}</small></div><button className="icon-button small" aria-label={`Edit ${goal.name} contribution`} onClick={() => open('contribution', entry, goal.id)}><MoreHorizontal size={16} /></button><button className="icon-button small danger-hover" aria-label={`Delete ${goal.name} contribution`} onClick={() => { if (window.confirm('Delete this goal contribution and reverse its account effect?')) { removeGoalContribution(entry.id); setToast('Goal contribution reversed') } }}><Trash2 size={15} /></button></div>)}</div> : null}
+        </article>
+      })}{!goals.length ? <EmptyState title="Give your savings a destination" detail="Create a goal and watch each contribution move you closer." onAdd={() => open('goal')} /> : null}</div>
+    </section>
   }
 
   /** Renders category budgets and safe, warning, and exceeded states. */
   function budgetsPage(): ReactElement {
+    const nextBudgetOccurrences = budgetOccurrences.filter((item) => ['scheduled', 'due'].includes(item.status)).sort((left, right) => left.date.localeCompare(right.date)).slice(0, 6)
     return <>
       <section className="panel page-panel">
         <div className="panel-heading"><div><span className="eyebrow">MONTHLY PLAN</span><h2>Spend with intention</h2></div><div className="header-actions"><button className="button secondary" onClick={() => openManagement('plan')}><CalendarDays size={15} />Plan spending</button><button className="button primary" onClick={() => open('budget')}><Plus size={16} />Add budget</button></div></div>
         <div className="budget-month-label"><CalendarDays size={15} />{new Intl.DateTimeFormat(profile.dateFormat, { month: 'long', year: 'numeric' }).format(new Date(`${currentMonth}-15T12:00:00`))}</div>
         <div className="budget-list">{monthBudgets.map((budget) => { const spent = monthEntries.filter((item) => item.type === 'expense' && item.category === budget.category).reduce((sum, item) => sum + item.amount, 0); const percent = spent / budget.amount * 100; const state = percent >= 100 ? 'over' : percent >= 80 ? 'warning' : 'safe'; return <article className="budget-row" key={budget.id}><div className="budget-title"><span className={`budget-category-dot ${state}`} /><div><strong>{budget.category}</strong><small>{formatCurrency(Math.max(0, budget.amount - spent))} remaining</small></div><div className="budget-amount"><strong>{formatCurrency(spent)}</strong><small>of {formatCurrency(budget.amount)}</small></div><div className="row-actions"><button className="icon-button small" aria-label={`Edit ${budget.category} budget`} onClick={() => open('budget', budget)}><MoreHorizontal size={16} /></button><button className="icon-button small danger-hover" aria-label={`Delete ${budget.category} budget`} onClick={() => { if (window.confirm(`Delete ${budget.category} budget?`)) { removeBudget(budget.id); setToast('Budget deleted') } }}><Trash2 size={15} /></button></div></div><div className="progress-track"><i className={state} style={{ width: `${Math.min(100, percent)}%` }} /></div><div className="budget-status"><span>{Math.round(percent)}% used</span><strong className={`status-label ${state}`}>{state === 'over' ? `Exceeded by ${formatCurrency(spent - budget.amount)}` : state === 'warning' ? 'Approaching limit' : 'On track'}</strong></div></article> })}{!monthBudgets.length ? <EmptyState title="No budgets for this month" detail="Create category limits to see remaining balances and warnings." onAdd={() => open('budget')} /> : null}</div>
       </section>
-      <section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">DATE-BASED PLANS</span><h2>Scheduled spending</h2></div><button className="button secondary" onClick={() => openManagement('plan')}><Plus size={15} />Add plan</button></div>{plannedSpending.length ? plannedSpending.slice().sort((a, b) => a.date.localeCompare(b.date)).map((plan) => <article className="scheduled-row" key={plan.id}><div><strong>{plan.title}</strong><small>{formatDate(plan.date)} · {plan.category} · {plan.status}</small></div><div className="scheduled-amount"><span>Planned</span><strong>{formatCurrency(plan.expectedAmount || plan.maximumAmount)}</strong></div>{plan.status === 'Pending Reconciliation' ? <button className="button primary" onClick={() => openManagement('reconcile', plan)}>Reconcile</button> : <button className="icon-button small danger-hover" aria-label={`Delete ${plan.title}`} onClick={() => { if (window.confirm(`Delete ${plan.title}?`)) { removePlan(plan.id); setToast('Spending plan removed') } }}><Trash2 size={15} /></button>}</article>) : <EmptyState title="No scheduled spending" detail="Plan a dated expense without changing your account balance." onAdd={() => openManagement('plan')} />}</section>
+      <section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">UPCOMING BUDGETS</span><h2>Scheduled spending</h2></div><button className="button secondary" onClick={() => openManagement('plan')}><Plus size={15} />Add plan</button></div>{plannedSpending.length ? plannedSpending.slice().sort((a, b) => a.date.localeCompare(b.date)).map((plan) => <article className="scheduled-row" key={plan.id}><div><strong>{plan.title}</strong><small>{formatDate(plan.date)} · {plan.category} · {plan.status}</small></div><div className="scheduled-amount"><span>Planned</span><strong>{formatCurrency(plan.expectedAmount || plan.maximumAmount)}</strong></div><button className="icon-button small" aria-label={`Edit ${plan.title}`} onClick={() => openManagement('plan', plan)}><MoreHorizontal size={16} /></button>{['Upcoming', 'Active', 'Due'].includes(plan.status) ? <button className="icon-button small" aria-label={`Skip ${plan.title}`} onClick={() => skipPlannedSpending(plan.id)}><X size={16} /></button> : null}{plan.status === 'Pending Reconciliation' ? <button className="button primary" onClick={() => openManagement('reconcile', plan)}>Reconcile</button> : ['Completed', 'Exceeded', 'Cancelled', 'Skipped'].includes(plan.status) ? null : <button className="icon-button small danger-hover" aria-label={`Cancel ${plan.title}`} onClick={() => { if (window.confirm(`Cancel ${plan.title}?`)) { removePlan(plan.id); setToast('Spending plan cancelled') } }}><Trash2 size={15} /></button>}</article>) : <EmptyState title="No upcoming budgets" detail="Schedule a dated commitment to reserve money before it leaves your account." onAdd={() => openManagement('plan')} />}</section>
+      <section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">RECURRING AND DATE-RANGE</span><h2>Budget schedules</h2></div><button className="button primary" onClick={() => { setEditingBudgetSchedule(null); setScheduleDialogOpen(true) }}><Plus size={15} />Schedule budget</button></div>{budgetSchedules.filter((item) => item.status === 'active').map((schedule) => { const remaining = budgetOccurrences.filter((item) => item.budgetScheduleId === schedule.id && ['scheduled', 'due'].includes(item.status)); return <article className="scheduled-row" key={schedule.id}><div><strong>{schedule.title}</strong><small>{schedule.category} · {formatDate(schedule.startDate)}–{formatDate(schedule.endDate)} · {remaining.length} remaining · {schedule.reservationMode === 'reserve' ? 'Reserved' : 'Not reserved'}</small></div><strong>{formatCurrency(schedule.amount)} / occurrence</strong><button className="icon-button small" aria-label={`Edit ${schedule.title} schedule`} onClick={() => { setEditingBudgetSchedule(schedule); setScheduleDialogOpen(true) }}><MoreHorizontal size={16} /></button><button className="icon-button small danger-hover" aria-label={`Cancel ${schedule.title} schedule`} onClick={() => { if (window.confirm(`Cancel ${schedule.title} and release future reservations?`)) { removeBudgetSchedule(schedule.id); setToast('Budget schedule cancelled') } }}><Trash2 size={15} /></button></article>})}{nextBudgetOccurrences.map((occurrence) => { const schedule = budgetSchedules.find((item) => item.id === occurrence.budgetScheduleId); if (!schedule || schedule.status !== 'active') return null; return <article className="scheduled-row budget-occurrence-row" key={occurrence.id}><div><strong>{schedule.title}</strong><small>{formatDate(occurrence.date)} · {occurrence.status.replaceAll('_', ' ')} · {accounts.find((item) => item.id === schedule.sourceAccountId)?.name ?? 'Account'}</small></div><strong>{formatCurrency(occurrence.plannedAmount)}</strong>{occurrence.status === 'due' || occurrence.status === 'pending_reconciliation' ? <button className="button primary" onClick={() => setBudgetReconciliation(occurrence)}>Reconcile</button> : <button className="icon-button small" aria-label={`Skip ${schedule.title} on ${occurrence.date}`} onClick={() => skipBudgetOccurrence(occurrence.id)}><X size={16} /></button>}</article>})}{!budgetSchedules.some((item) => item.status === 'active') && !nextBudgetOccurrences.length ? <EmptyState title="No budget schedules" detail="Create a date range or weekday schedule for planned spending." onAdd={() => { setEditingBudgetSchedule(null); setScheduleDialogOpen(true) }} /> : null}</section>
     </>
   }
 
@@ -341,19 +396,35 @@ export default function MoneyFlowApp() {
     const cells = [...Array(offset).fill(0), ...Array.from({ length: count }, (_, index) => index + 1)]
     const selected = transactions.filter((entry) => entry.date === selectedDate)
     const selectedContributions = contributions.filter((entry) => (entry.contributionDate ?? entry.date) === selectedDate && entry.status === 'paid')
+    const selectedNotes = calendarNotes.filter((note) => note.date === selectedDate)
+    const selectedPlans = plannedSpending.filter((plan) => plan.date === selectedDate)
+    const selectedBudgetOccurrences = budgetOccurrences.filter((occurrence) => occurrence.date === selectedDate && occurrence.status !== 'cancelled' && occurrence.status !== 'skipped')
     const spent = selected.filter((entry) => entry.type === 'expense' && !entry.contributionId).reduce((sum, entry) => sum + entry.amount, 0) + selectedContributions.filter((entry) => entry.includeInExpenseAnalytics).reduce((sum, entry) => sum + entry.amount, 0)
     const incomeAdded = selected.filter((entry) => entry.type === 'income').reduce((sum, entry) => sum + entry.amount, 0)
     const savingsAdded = selected.filter((entry) => entry.type === 'saving').reduce((sum, entry) => sum + entry.amount, 0)
     const limit = dailyBudgets.find((item) => item.date === selectedDate)?.amount
     const noSpendDays = Array.from({ length: count }, (_, index) => localDate(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), index + 1))).filter((date) => date <= today && !transactions.some((entry) => entry.type === 'expense' && !entry.contributionId && entry.date === date) && !contributions.some((entry) => (entry.contributionDate ?? entry.date) === date && entry.status === 'paid' && entry.includeInExpenseAnalytics)).length
-    return <section className="calendar-layout">
+    return <section className="calendar-layout">{selectedBudgetOccurrences.length ? <section className="panel calendar-day-budgets calendar-full-span"><div className="calendar-note-heading"><strong>Scheduled budgets · {formatDate(selectedDate)}</strong><span>{selectedBudgetOccurrences.length} occurrences</span></div>{selectedBudgetOccurrences.map((occurrence) => { const schedule = budgetSchedules.find((item) => item.id === occurrence.budgetScheduleId); if (!schedule) return null; return <article className="calendar-budget-row" key={occurrence.id}><div><strong>{schedule.title}</strong><small>{occurrence.status.replaceAll('_', ' ')} · {schedule.category}</small></div><span>Reserved {formatCurrency(occurrence.reservationId ? occurrence.plannedAmount : 0)}</span><span>Actual {formatCurrency(occurrence.actualAmount ?? (occurrence.postedTransactionId ? occurrence.plannedAmount : 0))}</span>{occurrence.status === 'due' || occurrence.status === 'pending_reconciliation' ? <button className="button secondary" onClick={() => setBudgetReconciliation(occurrence)}>Reconcile</button> : null}</article>})}</section> : null}
       <article className="panel calendar-panel">
         <div className="panel-heading"><div><span className="eyebrow">DAILY ACTIVITY</span><h2>{new Intl.DateTimeFormat(profile.dateFormat, { month: 'long', year: 'numeric' }).format(calendarMonth)}</h2><small className="calendar-no-spend">{noSpendDays} no-spend days</small></div><div className="calendar-nav"><button className="icon-button" aria-label="Previous month" onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}><ChevronLeft size={18} /></button><button className="icon-button" aria-label="Next month" onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}><ChevronRight size={18} /></button></div></div>
         <div className="calendar-weekdays">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => <span key={day}>{day}</span>)}</div>
-        <div className="calendar-grid">{cells.map((day, index) => { if (!day) return <span className="calendar-blank" key={`blank-${index}`} />; const date = `${localDate(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day)).slice(0, 7)}-${String(day).padStart(2, '0')}`; const amount = transactions.filter((entry) => entry.type === 'expense' && !entry.contributionId && entry.date === date).reduce((sum, entry) => sum + entry.amount, 0) + contributions.filter((entry) => (entry.contributionDate ?? entry.date) === date && entry.status === 'paid' && entry.includeInExpenseAnalytics).reduce((sum, entry) => sum + entry.amount, 0); const dailyLimit = dailyBudgets.find((item) => item.date === date)?.amount ?? analytics.averageDailyExpense; const intensity = amount === 0 ? 'none' : amount > dailyLimit ? 'high' : amount > dailyLimit * 0.5 ? 'medium' : 'low'; return <button key={date} className={`calendar-day ${intensity} ${selectedDate === date ? 'selected' : ''} ${date === today ? 'today' : ''}`} onClick={() => setSelectedDate(date)}><span>{day}</span><i>{amount ? formatCurrency(amount, true) : '·'}</i></button> })}</div>
+        <div className="calendar-grid">{cells.map((day, index) => {
+          if (!day) return <span className="calendar-blank" key={`blank-${index}`} />
+          const date = `${localDate(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day)).slice(0, 7)}-${String(day).padStart(2, '0')}`
+          const amount = transactions.filter((entry) => entry.type === 'expense' && !entry.contributionId && entry.date === date).reduce((sum, entry) => sum + entry.amount, 0) + contributions.filter((entry) => (entry.contributionDate ?? entry.date) === date && entry.status === 'paid' && entry.includeInExpenseAnalytics).reduce((sum, entry) => sum + entry.amount, 0)
+          const dailyLimit = dailyBudgets.find((item) => item.date === date)?.amount ?? analytics.averageDailyExpense
+          const intensity = amount === 0 ? 'none' : amount > dailyLimit ? 'high' : amount > dailyLimit * 0.5 ? 'medium' : 'low'
+          const noteCount = calendarNotes.filter((note) => note.date === date).length
+          const dayPlans = plannedSpending.filter((plan) => plan.date === date)
+          const dayOccurrences = budgetOccurrences.filter((occurrence) => occurrence.date === date && occurrence.status !== 'cancelled' && occurrence.status !== 'skipped')
+          const statuses = [...dayPlans.map((plan) => plan.status), ...dayOccurrences.map((occurrence) => occurrence.status)]
+          const budgetMarker = statuses.some((status) => status === 'Pending Reconciliation' || status === 'pending_reconciliation') ? 'R' : statuses.some((status) => status === 'Exceeded' || status === 'exceeded') ? '!' : statuses.some((status) => status === 'Completed' || status === 'completed') ? 'C' : statuses.some((status) => status === 'Active') ? 'A' : statuses.some((status) => status === 'due') ? 'D' : statuses.length ? 'B' : ''
+          const budgetStatus = statuses.join(', ')
+          return <button key={date} aria-label={`${formatDate(date, { month: 'long', day: 'numeric' })}${amount ? ', expense activity' : ''}${budgetStatus ? `, budget ${budgetStatus}` : ''}${noteCount ? `, ${noteCount} notes` : ''}`} className={`calendar-day ${intensity} ${selectedDate === date ? 'selected' : ''} ${date === today ? 'today' : ''} ${noteCount ? 'has-note' : ''}`} onClick={() => setSelectedDate(date)}><span>{day}</span><i>{amount ? formatCurrency(amount, true) : '·'}</i>{amount ? <small className="calendar-expense-indicator" aria-hidden="true">E</small> : null}{budgetMarker ? <small className={`calendar-budget-indicator ${budgetMarker === 'R' ? 'pending' : budgetMarker === '!' ? 'exceeded' : budgetMarker === 'C' ? 'completed' : budgetMarker === 'A' ? 'active' : budgetMarker === 'D' ? 'due' : 'scheduled'}`} aria-hidden="true">{budgetMarker}</small> : null}{noteCount ? <small className="calendar-note-indicator" aria-hidden="true">N</small> : null}</button>
+        })}</div>
         <div className="calendar-legend"><span><i className="low" />Low</span><span><i className="medium" />Moderate</span><span><i className="high" />High</span><span><i className="none" />No spend</span></div>
       </article>
-      <aside className="panel day-panel"><div className="panel-heading"><div><span className="eyebrow">DAY DETAILS</span><h2>{formatDate(selectedDate, { weekday: 'long', month: 'long', day: 'numeric' })}</h2></div></div><div className="day-total"><span>Actual spending</span><strong>{formatCurrency(spent)}</strong></div><div className="day-rollups"><span>Income added <strong>{formatCurrency(incomeAdded)}</strong></span><span>Savings added <strong>{formatCurrency(savingsAdded)}</strong></span></div>{limit ? <p className={`daily-limit ${spent > limit ? 'exceeded' : ''}`}>{spent > limit ? `Over daily budget by ${formatCurrency(spent - limit)}` : `${formatCurrency(limit - spent)} left of daily budget`}</p> : <button className="text-button set-daily" onClick={() => open('dailyBudget', undefined, undefined, selectedDate)}>+ Set daily budget</button>}<div className="day-transactions"><strong>Activity</strong>{selected.map((entry) => <TransactionRow key={entry.id} entry={entry} onEdit={(item) => open(item.type, item)} onDelete={deleteEntry} />)}{selectedContributions.map((entry) => <article className="scheduled-row" key={entry.id}><div><strong>{entry.title}</strong><small>Contribution · {entry.category}</small></div><strong>−{formatCurrency(entry.amount)}</strong></article>)}{!selected.length && !selectedContributions.length ? <p className="muted-note">No transactions recorded on this date.</p> : null}</div><button className="button secondary full-button" onClick={() => open('expense', undefined, undefined, selectedDate)}><Plus size={15} />Add expense for this date</button></aside>
+      <aside className="panel day-panel"><div className="panel-heading"><div><span className="eyebrow">DAY DETAILS</span><h2>{formatDate(selectedDate, { weekday: 'long', month: 'long', day: 'numeric' })}</h2></div></div><div className="day-total"><span>Actual spending</span><strong>{formatCurrency(spent)}</strong></div><div className="day-rollups"><span>Income added <strong>{formatCurrency(incomeAdded)}</strong></span><span>Savings added <strong>{formatCurrency(savingsAdded)}</strong></span></div>{limit ? <p className={`daily-limit ${spent > limit ? 'exceeded' : ''}`}>{spent > limit ? `Over daily budget by ${formatCurrency(spent - limit)}` : `${formatCurrency(limit - spent)} left of daily budget`}</p> : <button className="text-button set-daily" onClick={() => open('dailyBudget', undefined, undefined, selectedDate)}>+ Set daily budget</button>}<section className="calendar-notes"><div className="calendar-note-heading"><strong>Notes</strong><button className="text-button" onClick={() => { setEditingCalendarNote(null); setNoteDialogOpen(true) }}>Add note</button></div>{selectedNotes.map((note) => <article className="calendar-note-row" key={note.id}><div><strong>{note.title || 'Note'}</strong><p>{note.content}</p></div><button className="text-button" onClick={() => { setEditingCalendarNote(note); setNoteDialogOpen(true) }}>Edit</button><button className="text-button danger-text" onClick={() => { if (window.confirm('Delete this calendar note?')) removeCalendarNote(note.id) }}>Delete</button></article>)}{!selectedNotes.length ? <p className="muted-note">No notes for this date.</p> : null}</section>{selectedPlans.length ? <section className="calendar-day-budgets"><strong>Budget</strong>{selectedPlans.map((plan) => <article className="calendar-budget-row" key={plan.id}><div><strong>{plan.title}</strong><small>{plan.status} · {plan.category}</small></div><span>Reserved {formatCurrency(plan.reserveMoney ? plan.maximumAmount : 0)}</span><span>Actual {formatCurrency(plan.actualAmount ?? spent)}</span></article>)}</section> : null}<div className="day-transactions"><strong>Activity</strong>{selected.map((entry) => <TransactionRow key={entry.id} entry={entry} onEdit={(item) => open(item.type, item)} onDelete={deleteEntry} />)}{selectedContributions.map((entry) => <article className="scheduled-row" key={entry.id}><div><strong>{entry.title}</strong><small>Contribution · {entry.category}</small></div><strong>−{formatCurrency(entry.amount)}</strong></article>)}{!selected.length && !selectedContributions.length ? <p className="muted-note">No transactions recorded on this date.</p> : null}</div><button className="button secondary full-button" onClick={() => open('expense', undefined, undefined, selectedDate)}><Plus size={15} />Add expense for this date</button></aside>
     </section>
   }
 
@@ -373,7 +444,11 @@ export default function MoneyFlowApp() {
     })
     const accountDistribution = accountRows.filter((account) => account.includeInTotal && !account.archived && account.balance > 0)
     const insights = alerts.slice(0, 2)
+    const upcomingPlans = plannedSpending.filter((plan) => plan.date >= today && ['Upcoming', 'Active', 'Due'].includes(plan.status)).sort((left, right) => left.date.localeCompare(right.date)).slice(0, 3)
+    const upcomingOccurrences = budgetOccurrences.filter((occurrence) => occurrence.date >= today && ['scheduled', 'due'].includes(occurrence.status) && budgetSchedules.some((schedule) => schedule.id === occurrence.budgetScheduleId && schedule.status === 'active')).sort((left, right) => left.date.localeCompare(right.date)).slice(0, 3)
     return (
+      <>
+      <section className="panel page-panel dashboard-upcoming"><div className="panel-heading"><div><span className="eyebrow">NEXT COMMITMENTS</span><h2>Upcoming budgets</h2></div><button className="text-button" onClick={() => setPage('budgets')}>View schedule <ArrowRight size={14} /></button></div>{upcomingPlans.map((plan) => <article className="scheduled-row" key={plan.id}><div><strong>{plan.title}</strong><small>{plan.date === today ? 'Today' : formatDate(plan.date)} · {accounts.find((account) => account.id === plan.accountId)?.name ?? 'Account'} · {plan.category}</small></div><strong>{formatCurrency(plan.expectedAmount || plan.maximumAmount)}</strong><button className="icon-button small" aria-label={`Edit ${plan.title}`} onClick={() => openManagement('plan', plan)}><MoreHorizontal size={16} /></button></article>)}{upcomingOccurrences.map((occurrence) => { const schedule = budgetSchedules.find((item) => item.id === occurrence.budgetScheduleId); if (!schedule) return null; return <article className="scheduled-row" key={occurrence.id}><div><strong>{schedule.title}</strong><small>{occurrence.date === today ? 'Today' : formatDate(occurrence.date)} · {accounts.find((account) => account.id === schedule.sourceAccountId)?.name ?? 'Account'} · {schedule.category}</small></div><strong>{formatCurrency(occurrence.plannedAmount)}</strong><button className="icon-button small" aria-label={`Edit ${schedule.title} schedule`} onClick={() => { setEditingBudgetSchedule(schedule); setScheduleDialogOpen(true) }}><MoreHorizontal size={16} /></button><button className="icon-button small" aria-label={`Skip ${schedule.title} occurrence`} onClick={() => skipBudgetOccurrence(occurrence.id)}><X size={16} /></button></article>})}{!upcomingPlans.length && !upcomingOccurrences.length ? <p className="muted-note">No upcoming budgets or plans.</p> : null}</section>
       <section className="chart-grid dashboard-enrichment">
         <article className="panel">
           <div className="panel-heading"><div><span className="eyebrow">LAST 7 DAYS</span><h2>Weekly pulse</h2></div></div>
@@ -392,6 +467,7 @@ export default function MoneyFlowApp() {
           {insights.length ? insights.map((item) => <div className="notification-item" key={item.title}><span className={`notification-mark ${item.tone}`}><Bell size={16} /></span><div><strong>{item.title}</strong><p>{item.detail}</p></div><span className="notification-time">Now</span></div>) : <p className="section-intro">More data is needed to generate an insight.</p>}
         </article>
       </section>
+      </>
     )
   }
 
@@ -419,7 +495,25 @@ export default function MoneyFlowApp() {
 
   /** Renders local budget and savings-goal notification rules. */
   function notificationsPage(): ReactElement {
-    return <section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">LOCAL INSIGHTS</span><h2>Notifications</h2></div><span className="notification-count">{alerts.length} active</span></div><p className="section-intro">Alerts are calculated from finance data stored on this device.</p><div className="notification-list">{alerts.map((alert, index) => { const contribution = alert.contributionId ? contributions.find((item) => item.id === alert.contributionId) : undefined; return <article className="notification-item" key={`${alert.title}-${index}`}><span className={`notification-mark ${alert.tone}`}><Bell size={16} /></span><div><strong>{alert.title}</strong><p>{alert.detail}</p></div><span className="notification-time">Now</span>{contribution ? <button className="button secondary mark-paid-button" onClick={() => openManagement('payContribution', contribution)}>Mark as Paid</button> : null}</article> })}{!alerts.length ? <EmptyState title="All caught up" detail="Budget, goal, and contribution alerts appear here when relevant." /> : null}</div></section>
+    const filtered = notifications.filter((item) => notificationFilter === 'all' || notificationFilter === 'unread' && !item.readAt || notificationFilter === 'read' && Boolean(item.readAt)).sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    const unread = notifications.filter((item) => !item.readAt).length
+    function openRelated(notification: FinanceNotification) {
+      markNotificationRead(notification.id)
+      if (notification.relatedEntityType === 'calendar_note') {
+        const note = calendarNotes.find((item) => item.id === notification.relatedEntityId)
+        if (note) setSelectedDate(note.date)
+        setPage('calendar')
+      } else if (notification.relatedEntityType === 'budget_occurrence') {
+        const occurrence = budgetOccurrences.find((item) => item.id === notification.relatedEntityId)
+        if (occurrence) setSelectedDate(occurrence.date)
+        setPage('calendar')
+      } else if (notification.relatedEntityType === 'budget_schedule' || notification.relatedEntityType === 'planned_spending' || notification.relatedEntityType === 'budget') setPage('budgets')
+      else if (notification.relatedEntityType === 'goal' || notification.relatedEntityType === 'goal_contribution') setPage('goals')
+      else if (notification.relatedEntityType === 'account' || notification.relatedEntityType === 'transfer') setPage('accounts')
+      else if (notification.relatedEntityType === 'transaction') setPage('transactions')
+      else setPage('history')
+    }
+    return <section className="panel page-panel"><div className="panel-heading"><div><span className="eyebrow">ATTENTION CENTER</span><h2>Notifications</h2></div><div className="header-actions"><span className="notification-count">{unread} unread</span><button className="button secondary" disabled={!unread} onClick={markAllNotificationsRead}>Mark all read</button></div></div><div className="filters"><select aria-label="Filter notifications" value={notificationFilter} onChange={(event) => setNotificationFilter(event.target.value as 'all' | 'read' | 'unread')}><option value="all">All notifications</option><option value="unread">Unread</option><option value="read">Read</option></select></div><div className="notification-list">{filtered.map((notification) => <article className={`notification-item persisted-notification ${notification.readAt ? 'read' : 'unread'}`} key={notification.id}><button className="notification-content" type="button" onClick={() => openRelated(notification)}><span className="notification-mark"><Bell size={16} /></span><span><strong>{notification.title}</strong><p>{notification.message}</p><small>{new Intl.DateTimeFormat(profile.dateFormat, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(notification.createdAt))}</small></span></button><button className="icon-button small danger-hover" type="button" aria-label={`Delete notification: ${notification.title}`} onClick={() => removeNotification(notification.id)}><Trash2 size={15} /></button></article>)}{!filtered.length ? <EmptyState title={notificationFilter === 'unread' ? 'No unread notifications' : 'All caught up'} detail="Finance events that need your attention will appear here." /> : null}</div></section>
   }
 
   /** Renders profile, appearance, backup, and local data controls. */
@@ -438,7 +532,7 @@ export default function MoneyFlowApp() {
     </section>
   }
 
-  const views: Record<Page, ReactElement> = { dashboard: <>{dashboard()}{dashboardEnrichment()}</>, transactions: transactionsPage(), savings: savingsPage(), goals: goalsPage(), budgets: budgetsPage(), calendar: calendarPage(), analytics: <>{analyticsPage()}{analyticsEnrichment()}</>, notifications: notificationsPage(), settings: settingsPage(), accounts: accountsPage(), contributions: contributionsPage(), backups: <BackupScreen /> }
+  const views: Record<Page, ReactElement> = { dashboard: <>{dashboard()}{dashboardEnrichment()}</>, transactions: transactionsPage(), history: <ActivityHistoryPage entries={activityHistory} accounts={accounts} />, savings: savingsPage(), goals: goalsPage(), budgets: budgetsPage(), calendar: calendarPage(), analytics: <>{analyticsPage()}{analyticsEnrichment()}</>, notifications: notificationsPage(), settings: settingsPage(), accounts: accountsPage(), contributions: contributionsPage(), backups: <BackupScreen /> }
   const go = (next: string) => { setPage(next as Page); setQuickOpen(false); setMoreOpen(false) }
 
   return (
@@ -452,19 +546,22 @@ export default function MoneyFlowApp() {
         </a>
         <div className="sidebar-summary"><span>AVAILABLE TO SPEND</span><strong>{formatCurrency(spendable)}</strong><small>Savings {formatCurrency(savingsTotal)}</small></div>
         <nav className="side-nav" aria-label="Main navigation">
-          {navGroups.map((group) => <div className="nav-group" key={group.label}><span className="nav-label">{group.label}</span>{group.items.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => go(id)}><Icon size={17} /><span>{label}</span>{id === 'notifications' && alerts.length ? <i className="nav-badge">{alerts.length}</i> : null}</button>)}</div>)}
+          {navGroups.map((group) => <div className="nav-group" key={group.label}><span className="nav-label">{group.label}</span>{group.items.map(([id, label, Icon]) => <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => go(id)}><Icon size={17} /><span>{label}</span>{id === 'notifications' && unreadNotificationCount ? <i className="nav-badge">{unreadNotificationCount}</i> : null}</button>)}</div>)}
         </nav>
         <div className="sidebar-bottom"><button className={`nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => go('settings')}><Settings size={17} /><span>Settings</span></button><div className="sidebar-note"><Sparkles size={16} /><span><strong>Small steps add up</strong><small>Your money story, made clearer.</small></span></div><button className="profile-row" onClick={() => go('settings')}><span className="profile-avatar">{profile.photoDataUrl ? <img alt="" src={profile.photoDataUrl} /> : initials}</span><span><strong>{profile.displayName || 'Personal profile'}</strong><small>Profile and preferences</small></span></button></div>
       </aside>
       <main className="main-area">
-        <header className="topbar"><div className="topbar-left"><strong className="topbar-page">{pageNames[page]}</strong></div><div className="topbar-actions"><span className="top-date">{new Intl.DateTimeFormat(profile.dateFormat, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}</span><button className="icon-button" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</button><button className="icon-button notification-button" aria-label={`Notifications, ${alerts.length} active`} onClick={() => go('notifications')}><Bell size={18} />{alerts.length ? <i /> : null}</button><button className="header-avatar profile-trigger" aria-label="Open profile settings" onClick={() => go('settings')}>{profile.photoDataUrl ? <img alt="" src={profile.photoDataUrl} /> : initials}</button></div></header>
+        <header className="topbar"><div className="topbar-left"><strong className="topbar-page">{pageNames[page]}</strong></div><div className="topbar-actions"><span className="top-date">{new Intl.DateTimeFormat(profile.dateFormat, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}</span>{cloudSyncEnabled ? <span className={`cloud-sync-indicator ${cloudSyncStatus}`} role="status">{cloudSyncStatus === 'error' ? 'Sync blocked' : cloudSyncStatus === 'pending' ? `${cloudPendingCount} sync pending` : 'Synced'}</span> : null}<PwaInstallButton /><button className="icon-button" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</button><button className="icon-button notification-button" aria-label={`Notifications, ${unreadNotificationCount} unread`} onClick={() => go('notifications')}><Bell size={18} />{unreadNotificationCount ? <i /> : null}</button><button className="header-avatar profile-trigger" aria-label="Open profile settings" onClick={() => go('settings')}>{profile.photoDataUrl ? <img alt="" src={profile.photoDataUrl} /> : initials}</button></div></header>
         <div className="page-content"><div className="page-heading"><div><span className="eyebrow">{new Intl.DateTimeFormat(profile.dateFormat, { month: 'long', year: 'numeric' }).format(new Date())}</span><h1>{page === 'dashboard' ? `Good morning${greetingName ? `, ${greetingName}` : ''}` : pageNames[page]}<span className="heading-period">.</span></h1><p>{page === 'dashboard' ? 'Here’s your financial picture at a glance.' : page === 'transactions' ? 'Every inflow, outflow, and saving in one place.' : page === 'calendar' ? 'See how daily choices shape the month.' : 'A clearer view of your money, on your terms.'}</p></div>{page === 'dashboard' ? <button className="button primary header-add" onClick={() => open('expense')}><Plus size={16} />Add expense</button> : null}</div><AnimatePresence mode="wait" initial={false}><motion.div className="page-content" key={page} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}>{views[page]}</motion.div></AnimatePresence></div>
       </main>
       <QuickActions open={quickOpen} onToggle={() => { setMoreOpen(false); setQuickOpen((value) => !value) }} onClose={() => setQuickOpen(false)} onSelect={(action) => action === 'contributionRecord' || action === 'transfer' ? openManagement(action) : open(action)} />
       <nav className="mobile-nav" aria-label="Mobile navigation">{([['dashboard', LayoutDashboard], ['transactions', ArrowDownLeft], ['goals', Target], ['budgets', Activity]] as const).map(([id, Icon]) => <button key={id} aria-current={page === id ? 'page' : undefined} className={page === id ? 'active' : ''} onClick={() => go(id)} aria-label={pageNames[id]}><Icon size={20} /><span>{pageNames[id]}</span></button>)}<button className={moreOpen ? 'active' : ''} aria-controls="mobile-more" aria-expanded={moreOpen} onClick={() => { setQuickOpen(false); setMoreOpen((value) => !value) }}><MoreHorizontal size={20} /><span>More</span></button></nav>
-      {moreOpen ? <nav id="mobile-more" className="mobile-more-menu" aria-label="More pages">{(['accounts', 'savings', 'contributions', 'calendar', 'analytics', 'settings', 'notifications', 'backups'] as Page[]).map((id) => <button key={id} className={page === id ? 'active' : ''} onClick={() => { go(id); setMoreOpen(false) }}>{pageNames[id]}</button>)}</nav> : null}
-      {dialog && ['income', 'expense', 'saving', 'goal', 'budget', 'contribution', 'dailyBudget'].includes(dialog.kind) ? <EntryDialog kind={dialog.kind as DialogKind} record={dialog.record as Transaction | Budget | Goal | undefined} goalId={dialog.goalId} initialDate={dialog.initialDate} onClose={() => setDialog(null)} onSaved={setToast} /> : null}
+      {moreOpen ? <nav id="mobile-more" className="mobile-more-menu" aria-label="More pages">{(['accounts', 'savings', 'contributions', 'calendar', 'analytics', 'history', 'settings', 'notifications', 'backups'] as Page[]).map((id) => <button key={id} className={page === id ? 'active' : ''} onClick={() => { go(id); setMoreOpen(false) }}>{pageNames[id]}</button>)}</nav> : null}
+      {dialog && ['income', 'expense', 'saving', 'goal', 'budget', 'contribution', 'dailyBudget'].includes(dialog.kind) ? <EntryDialog kind={dialog.kind as DialogKind} record={dialog.record as Transaction | Budget | Goal | GoalContribution | undefined} goalId={dialog.goalId} initialDate={dialog.initialDate} onClose={() => setDialog(null)} onSaved={setToast} /> : null}
       {dialog && ['profile', 'account', 'transfer', 'contributionRecord', 'plan', 'adjustment', 'reconcile', 'clearData', 'payContribution'].includes(dialog.kind) ? <RecordDialog kind={dialog.kind as ManagementKind} record={dialog.record as Account | Contribution | PlannedSpending | undefined} onClose={() => setDialog(null)} onSaved={setToast} /> : null}
+      {noteDialogOpen ? <CalendarNoteDialog date={selectedDate} note={editingCalendarNote ?? undefined} onClose={() => setNoteDialogOpen(false)} onSaved={(note) => { saveCalendarNote(note); setNoteDialogOpen(false); setEditingCalendarNote(null); setToast('Calendar note saved') }} /> : null}
+      {scheduleDialogOpen ? <BudgetScheduleDialog schedule={editingBudgetSchedule ?? undefined} onClose={() => setScheduleDialogOpen(false)} onSaved={saveBudgetSchedule} /> : null}
+      {budgetReconciliation ? <BudgetOccurrenceDialog occurrence={budgetReconciliation} title={budgetSchedules.find((item) => item.id === budgetReconciliation.budgetScheduleId)?.title ?? 'Budget'} onClose={() => setBudgetReconciliation(null)} onSaved={(amount) => reconcileBudgetOccurrence(budgetReconciliation.id, amount)} /> : null}
       <AnimatePresence>{toast ? <motion.div className="toast" role="status" initial={{ opacity: 0, y: 18, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: 0.98 }} transition={{ type: 'spring', stiffness: 420, damping: 32 }}><motion.span initial={{ scale: 0.6 }} animate={{ scale: 1 }}><Check size={16} /></motion.span>{toast}<button className="icon-button small" aria-label="Dismiss" onClick={() => setToast('')}><X size={14} /></button></motion.div> : null}</AnimatePresence>
     </div>
     </MotionConfig>

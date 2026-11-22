@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
 import { Download, FileUp, History, ShieldCheck, X } from 'lucide-react'
 import { useFinanceStore } from '../store'
-import { backupSummary, createBackup, lastBackupKey, parseBackup, recoveryKey, restoredRecords, saveRecoverySnapshot, storageKey, type ValidatedBackup } from '../lib/backup'
+import { backupSummary, createBackup, getFinanceLastBackupKey, getFinanceRecoveryKey, getFinanceStorageKey, parseBackup, restoredRecords, saveRecoverySnapshot, type ValidatedBackup } from '../lib/backup'
 import { exportJson } from '../lib/backupFiles'
 
 /** Displays a keyboard-trapped restore confirmation before any local data replacement. */
@@ -30,13 +30,13 @@ function RestoreConfirmation({ backup, busy, onCancel, onConfirm }: { backup: Va
 
 /** Provides local-only backup, native export, validated import and recoverable replacement. */
 export function BackupScreen() {
-  const [lastBackup, setLastBackup] = useState(() => localStorage.getItem(lastBackupKey))
+  const [lastBackup, setLastBackup] = useState(() => localStorage.getItem(getFinanceLastBackupKey()))
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState<ValidatedBackup | null>(null)
   const [busy, setBusy] = useState(false)
   const input = useRef<HTMLInputElement>(null)
-  const [hasRecovery, setHasRecovery] = useState(() => Boolean(localStorage.getItem(recoveryKey)))
+  const [hasRecovery, setHasRecovery] = useState(() => Boolean(localStorage.getItem(getFinanceRecoveryKey())))
 
   /** Creates a validated snapshot before export; storage failures leave finance data untouched. */
   async function createLocalBackup(exportFile: boolean) {
@@ -44,10 +44,10 @@ export function BackupScreen() {
     try {
       const backup = createBackup(useFinanceStore.getState())
       saveRecoverySnapshot(localStorage)
-      setHasRecovery(Boolean(localStorage.getItem(recoveryKey)))
+      setHasRecovery(Boolean(localStorage.getItem(getFinanceRecoveryKey())))
       if (exportFile) await exportJson(backup)
       const savedAt = new Date().toISOString()
-      localStorage.setItem(lastBackupKey, savedAt)
+      localStorage.setItem(getFinanceLastBackupKey(), savedAt)
       setLastBackup(savedAt)
       setMessage(exportFile ? 'Backup exported. Keep a copy outside the app and verify the file was saved.' : 'On-device recovery snapshot created. Export a file to protect against uninstall or phone loss.')
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Backup failed. Records were not changed.') }
@@ -71,20 +71,21 @@ export function BackupScreen() {
     if (!pending) return
     setBusy(true); setError('')
     const previous = useFinanceStore.getState()
-    const original = localStorage.getItem(storageKey)
+    const activeStorageKey = getFinanceStorageKey()
+    const original = localStorage.getItem(activeStorageKey)
     try {
       const records = restoredRecords(pending, previous.profile)
       const verified = createBackup({ ...previous, ...records })
       saveRecoverySnapshot(localStorage)
-      const serialized = JSON.stringify({ state: { ...records, ...restoredRecords(verified, previous.profile) }, version: 3 })
-      localStorage.setItem(storageKey, serialized)
-      if (localStorage.getItem(storageKey) !== serialized) throw new Error('Restored data could not be verified.')
+      const serialized = JSON.stringify({ state: { ...records, ...restoredRecords(verified, previous.profile) }, version: 7 })
+      localStorage.setItem(activeStorageKey, serialized)
+      if (localStorage.getItem(activeStorageKey) !== serialized) throw new Error('Restored data could not be verified.')
       useFinanceStore.setState(records)
-      setHasRecovery(Boolean(localStorage.getItem(recoveryKey)))
+      setHasRecovery(Boolean(localStorage.getItem(getFinanceRecoveryKey())))
       setMessage('Backup restored. Balances and analytics are recalculated from your records.')
       setPending(null)
     } catch (failure) {
-      try { if (original !== null) localStorage.setItem(storageKey, original); else localStorage.removeItem(storageKey); useFinanceStore.setState(previous, true) } catch { setError('Storage failed. Your recovery snapshot is available; do not clear app data.'); setBusy(false); setPending(null); return }
+      try { if (original !== null) localStorage.setItem(activeStorageKey, original); else localStorage.removeItem(activeStorageKey); useFinanceStore.setState(previous, true) } catch { setError('Storage failed. Your recovery snapshot is available; do not clear app data.'); setBusy(false); setPending(null); return }
       setError(failure instanceof Error ? failure.message : 'Restore failed; previous records retained.')
       setPending(null)
     } finally { setBusy(false) }
@@ -94,10 +95,10 @@ export function BackupScreen() {
   function recover() {
     setError(''); setMessage('')
     try {
-      const raw = localStorage.getItem(recoveryKey)
+      const raw = localStorage.getItem(getFinanceRecoveryKey())
       if (!raw) throw new Error('No recovery snapshot found.')
       const snapshot = JSON.parse(raw)
-      setPending(parseBackup({ ...snapshot.persisted.state, schemaVersion: snapshot.persisted.version === 3 ? 3 : 2, exportedAt: snapshot.savedAt }))
+      setPending(parseBackup({ ...snapshot.persisted.state, schemaVersion: snapshot.persisted.version === 7 ? 7 : snapshot.persisted.version === 6 ? 6 : snapshot.persisted.version === 5 ? 5 : snapshot.persisted.version === 4 ? 4 : snapshot.persisted.version === 3 ? 3 : 2, exportedAt: snapshot.savedAt }))
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Recovery snapshot could not be read.') }
   }
 
@@ -105,7 +106,7 @@ export function BackupScreen() {
   async function exportOriginal() {
     setBusy(true); setError('')
     try {
-      const stored = localStorage.getItem(storageKey)
+      const stored = localStorage.getItem(getFinanceStorageKey())
       if (!stored) throw new Error('No persisted records are available to extract.')
       await exportJson(JSON.parse(stored), 'MoneyFlow_Original_Storage')
       setMessage('Original storage extracted for manual recovery. This rescue file is not a standard import backup.')

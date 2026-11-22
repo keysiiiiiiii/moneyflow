@@ -2,30 +2,36 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { X } from 'lucide-react'
 import { AccountPicker } from './AccountPicker'
-import { accountBalance, availableToSpend, expenseCategories, formatCurrency, localDate, savingTypes, totalMoney } from '../lib/finance'
+import { accountAvailableBalance, accountBalance, availableToSpend, expenseCategories, formatCurrency, localDate, savingTypes, totalMoney } from '../lib/finance'
 import { createId, useFinanceStore } from '../store'
-import type { Budget, Goal, Transaction } from '../types'
+import { useCloudSync } from '../lib/supabase/cloudSyncContext'
+import type { Budget, Goal, GoalContribution, Transaction } from '../types'
 
 export type DialogKind = 'income' | 'expense' | 'saving' | 'goal' | 'budget' | 'contribution' | 'dailyBudget'
 
 interface EntryDialogProps {
   kind: DialogKind
-  record?: Transaction | Budget | Goal
+  record?: Transaction | Budget | Goal | GoalContribution
   goalId?: string
   initialDate?: string
   onClose: () => void
   onSaved: (message: string) => void
 }
 
+function isGoalContribution(value: unknown): value is GoalContribution {
+  return Boolean(value && typeof value === 'object' && 'goalId' in value && 'accountId' in value && 'date' in value && 'notes' in value && 'type' in value)
+}
+
 /** Renders an accessible modal for validated local finance records. */
 export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSaved }: EntryDialogProps) {
   const store = useFinanceStore()
+  const { runMutation } = useCloudSync()
   const [error, setError] = useState('')
   const dialogRef = useRef<HTMLElement>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
   const [values, setValues] = useState<Record<string, string>>(() => {
-    const base: Record<string, string> = { amount: '', date: initialDate ?? localDate(), category: 'Food', savingType: savingTypes[0], savingMode: '', accountId: store.accounts.find((account) => !account.archived)?.id ?? '', source: '', description: '', notes: '', name: '', targetAmount: '', currentAmount: '', deadline: '', month: localDate().slice(0, 7), color: 'blue', paidFromAccount: 'false', recurring: 'false' }
-    if (record && 'type' in record) {
+    const base: Record<string, string> = { amount: '', date: initialDate ?? localDate(), category: 'Food', savingType: savingTypes[0], savingMode: '', accountId: store.accounts.find((account) => !account.archived)?.id ?? '', source: '', description: '', notes: '', name: '', targetAmount: '', currentAmount: '', deadline: '', month: localDate().slice(0, 7), color: 'blue', goalContributionType: 'reserve', recurring: 'false' }
+    if (record && 'type' in record && ['income', 'expense', 'saving'].includes(record.type)) {
       base.amount = String(record.amount)
       base.date = record.date
       base.accountId = record.accountId ?? base.accountId
@@ -34,6 +40,9 @@ export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSave
       if (record.type === 'saving') Object.assign(base, { savingType: record.savingType, savingMode: record.mode ?? 'transfer', accountId: record.accountId ?? base.accountId })
     } else if (record && 'targetAmount' in record) {
       Object.assign(base, { name: record.name, targetAmount: String(record.targetAmount), currentAmount: String(record.currentAmount), deadline: record.deadline, color: record.color })
+    } else if (isGoalContribution(record)) {
+      const contribution = record
+      Object.assign(base, { amount: String(contribution.amount), date: contribution.date, accountId: contribution.accountId, goalContributionType: contribution.type, notes: contribution.notes })
     } else if (record && 'month' in record) {
       Object.assign(base, { category: record.category, amount: String(record.amount), month: record.month })
     }
@@ -78,8 +87,18 @@ export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSave
     </label>
   )
 
+  const contributionSource = store.accounts.find((account) => account.id === values.accountId)
+  const contributionAmount = Number(values.amount) || 0
+  const editedGoalContribution = record && 'goalId' in record ? record as GoalContribution : undefined
+  const previewGoalContributions = store.goalContributions.filter((item) => item.id !== editedGoalContribution?.id)
+  if (kind === 'contribution' && goalId && values.goalContributionType === 'reserve' && contributionAmount > 0) previewGoalContributions.push({ id: editedGoalContribution?.id ?? 'preview', goalId, accountId: values.accountId, amount: contributionAmount, type: 'reserve', date: values.date, notes: values.notes, createdAt: '', updatedAt: '' })
+  const previewTransactions = store.transactions.filter((entry) => entry.type !== 'expense' || entry.goalContributionId !== editedGoalContribution?.id)
+  if (kind === 'contribution' && values.goalContributionType === 'paid' && contributionAmount > 0 && contributionSource) previewTransactions.push({ id: 'preview', type: 'expense', amount: contributionAmount, date: values.date, category: 'Investment', description: 'Goal contribution', accountId: contributionSource.id, goalContributionId: 'preview' })
+  const previewTotal = totalMoney(store.accounts, previewTransactions, store.transfers, store.contributions, store.balanceAdjustments)
+  const previewSpendable = availableToSpend(previewTotal, previewTransactions, store.plannedSpending, localDate(), previewGoalContributions, store.budgetSchedules, store.budgetOccurrences)
+
   /** Validates and stores the selected record type. */
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
     const amount = Number(values.amount)
@@ -88,12 +107,15 @@ export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSave
       return
     }
     if (kind === 'contribution' && goalId) {
-      const paidFromAccount = values.paidFromAccount === 'true'
-      const source = store.accounts.find((account) => account.id === values.accountId)
-      if (paidFromAccount && !source) return setError('Choose a source account for an outgoing contribution.')
-      if (paidFromAccount && source && amount > accountBalance(source, store.transactions, store.transfers, store.contributions, store.balanceAdjustments)) return setError('The payment cannot exceed the source account balance.')
-      store.addGoalContribution(goalId, amount, values.accountId, paidFromAccount)
-      onSaved(paidFromAccount ? 'Goal contribution paid from account' : 'Goal amount allocated internally; total money is unchanged')
+      if (!values.accountId) return setError('Choose a funding account for this goal contribution.')
+      const existing = record && 'goalId' in record ? record as GoalContribution : undefined
+      const contribution = { id: existing?.id ?? createId(), goalId, amount, accountId: values.accountId, type: values.goalContributionType as 'reserve' | 'paid', date: values.date, notes: values.notes.trim(), createdAt: existing?.createdAt ?? new Date().toISOString(), updatedAt: new Date().toISOString() }
+      let queued: boolean
+      try { queued = await runMutation({ kind: 'goal_contribution', value: contribution }) }
+      catch (failure) { return setError(failure instanceof Error ? failure.message : 'Goal contribution could not be saved to the cloud.') }
+      const result = store.upsertGoalContribution(contribution)
+      if (!result.success) return setError(result.message)
+      onSaved(`${result.message}${queued ? ' Saved locally; cloud sync pending.' : ''}`)
     } else if (kind === 'goal') {
       const targetAmount = Number(values.targetAmount)
       if (!Number.isFinite(targetAmount) || targetAmount <= 0) return setError('Enter a target greater than zero.')
@@ -111,12 +133,13 @@ export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSave
       const base = { id: record && 'type' in record ? record.id : createId(), amount, date: values.date, accountId: values.accountId }
       const source = store.accounts.find((account) => account.id === values.accountId)
       if (kind === 'expense' && !source) return setError('Select or create an account before recording an expense.')
+      if (kind === 'saving' && !source) return setError('Select the account or location where this savings is held.')
       const priorExpense = record && 'type' in record && record.type === 'expense' && record.accountId === values.accountId ? record.amount : 0
-      if (kind === 'expense' && source && amount > accountBalance(source, store.transactions, store.transfers, store.contributions, store.balanceAdjustments) + priorExpense) return setError('This expense is greater than the selected account balance.')
+      if (kind === 'expense' && source && amount > accountAvailableBalance(source, store.transactions, store.transfers, store.contributions, store.balanceAdjustments, store.plannedSpending, store.goalContributions, store.budgetSchedules, store.budgetOccurrences) + priorExpense) return setError('This expense is greater than the selected account’s available balance after reservations.')
       if (kind === 'saving' && values.savingMode === 'transfer') {
         const money = totalMoney(store.accounts, store.transactions, store.transfers, store.contributions, store.balanceAdjustments)
-        const available = availableToSpend(money, store.transactions, store.plannedSpending)
-        const priorAllocation = record && 'type' in record && record.type === 'saving' && record.mode !== 'opening' ? record.amount : 0
+        const available = availableToSpend(money, store.transactions, store.plannedSpending, localDate(), store.goalContributions, store.budgetSchedules, store.budgetOccurrences)
+        const priorAllocation = record && 'type' in record && record.type === 'saving' ? record.amount : 0
         if (amount > available + priorAllocation) return setError('This transfer is greater than available-to-spend money.')
       }
       const entry: Transaction = kind === 'income'
@@ -124,8 +147,12 @@ export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSave
         : kind === 'expense'
           ? { ...base, ...(record && 'type' in record && record.type === 'expense' ? { autoPlanId: record.autoPlanId, provisional: record.provisional } : {}), type: 'expense', category: values.category, description: values.description.trim(), recurring: values.recurring === 'true' }
           : { ...base, type: 'saving', savingType: values.savingType, mode: values.savingMode as 'opening' | 'transfer' }
+      let queued: boolean
+      try { queued = await runMutation({ kind: 'transaction', value: entry }) }
+      catch (failure) { return setError(failure instanceof Error ? failure.message : 'Transaction could not be saved to the cloud.') }
       store.upsertTransaction(entry)
-      onSaved(kind === 'expense' ? `Expense added: ${formatCurrency(amount)} under ${values.category}.` : kind === 'income' ? `Income added: ${formatCurrency(amount)} from ${values.source.trim()}.` : values.savingMode === 'opening' ? 'Existing savings recorded without reducing an account balance.' : 'Savings transfer recorded; total money is unchanged.')
+      const savedMessage = kind === 'expense' ? `Expense added: ${formatCurrency(amount)} under ${values.category}.` : kind === 'income' ? `Income added: ${formatCurrency(amount)} from ${values.source.trim()}.` : values.savingMode === 'opening' ? 'Existing savings recorded without reducing an account balance.' : 'Savings transfer recorded; total money is unchanged.'
+      onSaved(`${savedMessage}${queued ? ' Saved locally; cloud sync pending.' : ''}`)
     }
     onClose()
   }
@@ -139,9 +166,9 @@ export function EntryDialog({ kind, record, goalId, initialDate, onClose, onSave
             {kind === 'goal' ? <>{field('name', 'Goal name')}{field('targetAmount', 'Target amount', 'number')}{field('currentAmount', 'Already saved', 'number', false)}{field('deadline', 'Deadline', 'date')}</> : null}
             {kind === 'budget' ? <>{field('amount', 'Budget amount', 'number')}{field('month', 'Month', 'month')}<label className="field"><span>Category</span><select value={values.category} onChange={(event) => setValue('category', event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label></> : null}
             {kind === 'dailyBudget' ? <>{field('date', 'Date', 'date')}{field('amount', 'Daily limit', 'number')}</> : null}
-            {kind === 'contribution' ? field('amount', 'Contribution amount', 'number') : null}
-            {kind === 'contribution' && goalId ? <><AccountPicker label="Source account" value={values.accountId} onChange={(id) => setValue('accountId', id)} /><label className="check-field"><input type="checkbox" checked={values.paidFromAccount === 'true'} onChange={(event) => setValue('paidFromAccount', String(event.target.checked))} /><span>This is an outgoing payment</span></label><p className="form-hint">An internal goal allocation updates progress without reducing total money.</p></> : null}
+            {kind === 'contribution' && goalId ? <>{field('amount', 'Contribution amount', 'number')}{field('date', 'Date', 'date')}<AccountPicker label="Funding account" value={values.accountId} onChange={(id) => setValue('accountId', id)} /><label className="field"><span>Contribution type</span><select value={values.goalContributionType} onChange={(event) => setValue('goalContributionType', event.target.value)}><option value="reserve">Allocate / Reserve for Goal</option><option value="paid">Pay Money Out</option></select></label>{field('notes', 'Notes', 'text', false)}{contributionAmount > 0 && contributionSource ? <p className="form-hint" aria-live="polite">{values.goalContributionType === 'reserve' ? `${formatCurrency(contributionAmount)} will be reserved from ${contributionSource.name}. Its physical balance will remain ${formatCurrency(accountBalance(contributionSource, store.transactions, store.transfers, store.contributions, store.balanceAdjustments))}. Available to Spend will be ${formatCurrency(previewSpendable)}.` : `${formatCurrency(contributionAmount)} will leave ${contributionSource.name}. Its physical balance will become ${formatCurrency(accountBalance(contributionSource, previewTransactions, store.transfers, store.contributions, store.balanceAdjustments))}.`}</p> : null}</> : null}
             {['income', 'expense', 'saving'].includes(kind) ? <>{field('amount', 'Amount', 'number')}{field('date', kind === 'saving' ? 'As-of date' : 'Date', 'date')}{kind !== 'saving' ? <AccountPicker label={kind === 'income' ? 'Deposit account' : 'Paid from account'} value={values.accountId} onChange={(id) => setValue('accountId', id)} /> : null}{kind === 'income' ? <>{field('source', 'Income source')}{field('notes', 'Notes', 'text', false)}</> : null}{kind === 'expense' ? <><label className="field"><span>Category</span><select value={values.category} onChange={(event) => setValue('category', event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label>{field('description', 'Merchant or description')}<label className="check-field"><input type="checkbox" checked={values.recurring === 'true'} onChange={(event) => setValue('recurring', String(event.target.checked))} /><span>Recurring expense</span></label></> : null}{kind === 'saving' ? <><label className="field"><span>What are you recording?</span><select required value={values.savingMode} onChange={(event) => setValue('savingMode', event.target.value)}><option value="">Choose one</option><option value="opening">Existing savings</option><option value="transfer">New savings transfer</option></select></label><label className="field"><span>Saving type</span><select value={values.savingType} onChange={(event) => setValue('savingType', event.target.value)}>{savingTypes.map((item) => <option key={item}>{item}</option>)}</select></label><p className="form-hint">Existing savings are opening balances and are not treated as new income or current-month growth. A new transfer reduces available-to-spend without reducing total money.</p></> : null}</> : null}
+            {kind === 'saving' && values.savingMode === 'opening' ? <AccountPicker label="Savings account / location" value={values.accountId} onChange={(id) => setValue('accountId', id)} /> : null}
             {kind === 'saving' && values.savingMode === 'transfer' ? <AccountPicker label="Source account" value={values.accountId} onChange={(id) => setValue('accountId', id)} /> : null}
           </div>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
